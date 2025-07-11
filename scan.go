@@ -3,24 +3,21 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
-	"net"
+	"net/http"
+	"os"
 	"os/exec"
-	"regexp"
+	"runtime"
 	"sort"
-	"strconv"
-	"sync"
+	"strings"
 	"time"
 )
 
-type PingResult struct {
-	IP  string
-	RTT time.Duration
-}
-
 type EndpointResult struct {
 	Endpoint string
-	Latency  time.Duration
+	Ping     string
+	Loss     string
 }
 
 func generateIPv4Addresses() []string {
@@ -30,172 +27,146 @@ func generateIPv4Addresses() []string {
 		"188.114.96.", "188.114.97.", "188.114.98.", "188.114.99.",
 	}
 	for _, subnet := range subnets {
-		for i := 0; i < 5; i++ {
+		for i := 0; i < 50; i++ { 
 			ips = append(ips, fmt.Sprintf("%s%d", subnet, rand.Intn(256)))
 		}
 	}
 	return ips
 }
 
-func generateIPv6Addresses() []string {
-	var ips []string
-	prefixes := []string{"2606:4700:d0::", "2606:4700:d1::"}
-	for _, prefix := range prefixes {
-		for i := 0; i < 5; i++ {
-			ip := fmt.Sprintf("%s%x:%x:%x:%x",
-				prefix, rand.Intn(0xffff), rand.Intn(0xffff), rand.Intn(0xffff), rand.Intn(0xffff))
-			ips = append(ips, ip)
-		}
+func fileExists(filename string) bool {
+	info, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return false
 	}
-	return ips
+	return !info.IsDir()
 }
 
-func pingWithTermux(ipAddr string) (time.Duration, error) {
-	cmd := exec.Command("ping", "-c", "3", "-W", "2", ipAddr)
-	stdout, err := cmd.StdoutPipe()
+func downloadWarperEndpoint() error {
+	var cpuArch string
+	switch runtime.GOARCH {
+	case "amd64":
+		cpuArch = "amd64"
+	case "386":
+		cpuArch = "386"
+	case "arm64":
+		cpuArch = "arm64"
+	case "arm":
+		cpuArch = "arm"
+	default:
+		return fmt.Errorf("unsupported architecture: %s", runtime.GOARCH)
+	}
+
+	url := fmt.Sprintf("https://raw.githubusercontent.com/Ptechgithub/warp/main/endip/%s", cpuArch)
+	fmt.Printf("Downloading 'warpendpoint' for %s architecture...\n", cpuArch)
+
+	resp, err := http.Get(url)
 	if err != nil {
-		return 0, err
+		return fmt.Errorf("failed to download: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
-		return 0, err
-	}
-	scanner := bufio.NewScanner(stdout)
-	var avgRtt time.Duration
-	rttRegex := regexp.MustCompile(`rtt min/avg/max/mdev = [\d.]+/([\d.]+)/[\d.]+/[\d.]+ ms`)
-	for scanner.Scan() {
-		line := scanner.Text()
-		matches := rttRegex.FindStringSubmatch(line)
-		if len(matches) > 1 {
-			avg, err := strconv.ParseFloat(matches[1], 64)
-			if err == nil {
-				avgRtt = time.Duration(avg * float64(time.Millisecond))
-			}
-		}
-	}
-	if err := cmd.Wait(); err != nil {
-		return 0, fmt.Errorf("no response from host")
-	}
-	if avgRtt == 0 {
-		return 0, fmt.Errorf("could not parse RTT")
-	}
-	return avgRtt, nil
-}
+	defer resp.Body.Close()
 
-func scanPort(ip string, port int, resultsChan chan<- EndpointResult, wg *sync.WaitGroup) {
-	defer wg.Done()
-	protocol := "udp"
-	address := net.JoinHostPort(ip, strconv.Itoa(port))
-
-	start := time.Now()
-	conn, err := net.DialTimeout(protocol, address, 1*time.Second)
-	latency := time.Since(start)
-
-	if err == nil {
-		conn.Close()
-		resultsChan <- EndpointResult{Endpoint: address, Latency: latency}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
 	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	err = ioutil.WriteFile("warpendpoint", body, 0755) 
+	if err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	fmt.Println("Download complete.")
+	return nil
 }
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
-	fmt.Println("Step 1: Finding best IPs with ping...")
-	allIPs := append(generateIPv4Addresses(), generateIPv6Addresses()...)
-
-	var pingWg sync.WaitGroup
-	pingResultsChan := make(chan PingResult, len(allIPs))
-
-	for _, ip := range allIPs {
-		pingWg.Add(1)
-		go func(ipAddr string) {
-			defer pingWg.Done()
-			rtt, err := pingWithTermux(ipAddr)
-			if err == nil {
-				pingResultsChan <- PingResult{IP: ipAddr, RTT: rtt}
-			}
-		}(ip)
-	}
-
-	pingWg.Wait()
-	close(pingResultsChan)
-
-	var bestIPs []PingResult
-	for result := range pingResultsChan {
-		bestIPs = append(bestIPs, result)
-	}
-
-	if len(bestIPs) == 0 {
-		fmt.Println("No responsive IPs found in Step 1. Exiting.")
-		return
-	}
-
-	sort.Slice(bestIPs, func(i, j int) bool {
-		return bestIPs[i].RTT < bestIPs[j].RTT
-	})
-    
-    ipToPing := make(map[string]time.Duration)
-    for _, ipResult := range bestIPs {
-        ipToPing[ipResult.IP] = ipResult.RTT
-    }
-
-	fmt.Println("Step 1 Complete. Best IPs found.")
-
-	fmt.Println("\nStep 2: Scanning ports on best IPs to find a full endpoint...")
-
-	portsToScan := []int{2408, 500, 1701, 4500, 8886, 908, 8854, 878}
-
-	var portWg sync.WaitGroup
-	endpointResultsChan := make(chan EndpointResult, len(bestIPs)*len(portsToScan))
-
-	scanLimit := 10
-	if len(bestIPs) < scanLimit {
-		scanLimit = len(bestIPs)
-	}
-
-	for _, ipResult := range bestIPs[:scanLimit] {
-		for _, port := range portsToScan {
-			portWg.Add(1)
-			go scanPort(ipResult.IP, port, endpointResultsChan, &portWg)
+	if !fileExists("warpendpoint") {
+		err := downloadWarperEndpoint()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
-	portWg.Wait()
-	close(endpointResultsChan)
+	fmt.Println("Generating IP list...")
+	ips := generateIPv4Addresses()
+	ipFile, err := os.Create("ip.txt")
+	if err != nil {
+		fmt.Printf("Error creating ip.txt: %v\n", err)
+		os.Exit(1)
+	}
+	for _, ip := range ips {
+		fmt.Fprintln(ipFile, ip)
+	}
+	ipFile.Close()
 
-	var finalResults []EndpointResult
-	for result := range endpointResultsChan {
-		finalResults = append(finalResults, result)
+	fmt.Println("Running 'warpendpoint' to find the best endpoints... This may take a moment.")
+	cmd := exec.Command("./warpendpoint")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err = cmd.Run()
+	if err != nil {
+		fmt.Printf("Error running warpendpoint: %v\n", err)
+		os.Exit(1)
 	}
 
-	if len(finalResults) == 0 {
-		fmt.Println("\n-------------------------------------------------------------")
-		fmt.Println("CRITICAL: Could not find any open ports on the responsive IPs.")
-		fmt.Println("This might be due to network restrictions.")
-		fmt.Println("-------------------------------------------------------------")
+	fmt.Println("\nScan complete. Processing results...")
+
+	resultFile, err := os.Open("result.csv")
+	if err != nil {
+		fmt.Printf("Error opening result.csv: %v\n", err)
+		os.Exit(1)
+	}
+	defer resultFile.Close()
+
+	var results []EndpointResult
+	scanner := bufio.NewScanner(resultFile)
+	isFirstLine := true
+	for scanner.Scan() {
+		if isFirstLine { 
+			isFirstLine = false
+			continue
+		}
+		line := scanner.Text()
+		parts := strings.Split(line, ",")
+		if len(parts) == 3 {
+			results = append(results, EndpointResult{
+				Endpoint: parts[0],
+				Loss:     parts[1],
+				Ping:     parts[2],
+			})
+		}
+	}
+
+	if len(results) == 0 {
+		fmt.Println("No working endpoints found.")
 		return
 	}
+    
 
-	sort.Slice(finalResults, func(i, j int) bool {
-		return finalResults[i].Latency < finalResults[j].Latency
-	})
 
 	fmt.Println("\n--- Best Endpoint Found ---")
-	bestEndpoint := finalResults[0]
-    
-    host, _, _ := net.SplitHostPort(bestEndpoint.Endpoint)
-    realPing := ipToPing[host]
-
+	bestEndpoint := results[0]
 	fmt.Printf("🏆 Best Endpoint: %s\n", bestEndpoint.Endpoint)
-	fmt.Printf("   Real Ping: %.2f ms\n\n", float64(realPing.Nanoseconds())/1e6)
-	fmt.Println("(The lower the ms, the faster the ping)")
+	fmt.Printf("   Ping: %s\n", bestEndpoint.Ping)
+    fmt.Printf("   Packet Loss: %s\n\n", bestEndpoint.Loss)
+    fmt.Println("(You can now use this Endpoint in your app)")
 
 	fmt.Println("\n--- Top 5 Endpoints ---")
-	for i, result := range finalResults {
+	for i, result := range results {
 		if i >= 5 {
 			break
 		}
-        host, _, _ := net.SplitHostPort(result.Endpoint)
-        realPing := ipToPing[host]
-		fmt.Printf("%d. Endpoint: %s (Ping: %.2f ms)\n", i+1, result.Endpoint, float64(realPing.Nanoseconds())/1e6)
+		fmt.Printf("%d. Endpoint: %s (Ping: %s, Loss: %s)\n", i+1, result.Endpoint, result.Ping, result.Loss)
 	}
+
+	os.Remove("ip.txt")
+	os.Remove("result.csv")
 }
