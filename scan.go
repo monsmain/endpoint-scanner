@@ -16,41 +16,34 @@ type EndpointResult struct {
 }
 
 func probeEndpoint(ip, protocol string, port int, resultsChan chan<- EndpointResult, wg *sync.WaitGroup, counter *uint64) {
-	// aWG (another WaitGroup) ro be Done() tabdil kardam
 	defer wg.Done()
+	defer atomic.AddUint64(counter, 1)
 
 	endpoint := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
 	
 	start := time.Now()
-	// az DialTimeout estefadeh kardam baraye connection haye sari'tar
 	conn, err := net.DialTimeout(protocol, endpoint, 2*time.Second)
 	if err != nil {
-		atomic.AddUint64(counter, 1) // dar soorat khata ham counter ezafe mishe
 		return
 	}
 	defer conn.Close()
 	ping := time.Since(start)
 
-	// baraye UDP, yek handshake sade anjam midim
 	if protocol == "udp" {
 		handshakePacket := []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 		_, err = conn.Write(handshakePacket)
 		if err != nil {
-			atomic.AddUint64(counter, 1)
 			return
 		}
-		// baraye daryaft pasokh, 2 saniye sabr mikonim
 		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		buffer := make([]byte, 1) // yek buffer koochak kafi hast
+		buffer := make([]byte, 1)
 		_, err = conn.Read(buffer)
 		if err != nil {
-			atomic.AddUint64(counter, 1)
 			return
 		}
 	}
     
 	resultsChan <- EndpointResult{Endpoint: endpoint, Ping: ping, Protocol: protocol}
-	atomic.AddUint64(counter, 1) // dar soorat movaffaghiyat ham ezafe mishe
 }
 
 func main() {
@@ -78,7 +71,7 @@ func main() {
 	
 	var progressCounter uint64
 
-	concurrencyLimit := 200 // Shoma mitavanid in adad ra baraye ertebat qavitar afzayesh dahid
+	concurrencyLimit := 200
 	guard := make(chan struct{}, concurrencyLimit)
 
 	for _, protocol := range protocolsToScan {
@@ -95,26 +88,20 @@ func main() {
 		}
 	}
 
-	// Goroutine baraye namayesh navar pishraft
 	go func() {
-		for {
-			time.Sleep(1 * time.Second)
+		for atomic.LoadUint64(&progressCounter) < uint64(totalJobs) {
 			progress := atomic.LoadUint64(&progressCounter)
-			// Vaghti hame karha anjam shod, az halghe kharej sho
-			if progress >= uint64(totalJobs) {
-				break
-			}
 			percentage := float64(progress) / float64(totalJobs) * 100
-			// ba \r, khat badi chap nemishe va roye haman khat update mishe
-			fmt.Printf("\rScanning... %.2f%% complete", percentage)
+			
+			fmt.Printf("\rScanning... [%.2f%%]", percentage)
+			time.Sleep(500 * time.Millisecond) 
 		}
 	}()
 
-	wg.Wait()
+	wg.Wait() 
 	close(resultsChan)
 	
-	// baraye inke navar pishraft dar 100% tamam shavad
-	fmt.Printf("\rScanning... 100.00%% complete\n")
+	fmt.Printf("\rScanning... [100.00%%]\n")
 
 	var udpResults []EndpointResult
 	var tcpResults []EndpointResult
