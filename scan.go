@@ -18,6 +18,11 @@ type PingResult struct {
 	RTT time.Duration
 }
 
+type EndpointResult struct {
+	Endpoint string 
+	Latency  time.Duration
+}
+
 func generateIPv4Addresses() []string {
 	var ips []string
 	subnets := []string{
@@ -25,7 +30,7 @@ func generateIPv4Addresses() []string {
 		"188.114.96.", "188.114.97.", "188.114.98.", "188.114.99.",
 	}
 	for _, subnet := range subnets {
-		for i := 0; i < 20; i++ { 
+		for i := 0; i < 5; i++ {
 			ips = append(ips, fmt.Sprintf("%s%d", subnet, rand.Intn(256)))
 		}
 	}
@@ -36,7 +41,7 @@ func generateIPv6Addresses() []string {
 	var ips []string
 	prefixes := []string{"2606:4700:d0::", "2606:4700:d1::"}
 	for _, prefix := range prefixes {
-		for i := 0; i < 20; i++ { 
+		for i := 0; i < 5; i++ {
 			ip := fmt.Sprintf("%s%x:%x:%x:%x",
 				prefix, rand.Intn(0xffff), rand.Intn(0xffff), rand.Intn(0xffff), rand.Intn(0xffff))
 			ips = append(ips, ip)
@@ -45,23 +50,19 @@ func generateIPv6Addresses() []string {
 	return ips
 }
 
+
 func pingWithTermux(ipAddr string) (time.Duration, error) {
-
 	cmd := exec.Command("ping", "-c", "3", "-W", "2", ipAddr)
-
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return 0, err
 	}
-
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
-
 	scanner := bufio.NewScanner(stdout)
 	var avgRtt time.Duration
 	rttRegex := regexp.MustCompile(`rtt min/avg/max/mdev = [\d.]+/([\d.]+)/[\d.]+/[\d.]+ ms`)
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		matches := rttRegex.FindStringSubmatch(line)
@@ -72,93 +73,121 @@ func pingWithTermux(ipAddr string) (time.Duration, error) {
 			}
 		}
 	}
-
 	if err := cmd.Wait(); err != nil {
-
 		return 0, fmt.Errorf("no response from host")
 	}
-
 	if avgRtt == 0 {
 		return 0, fmt.Errorf("could not parse RTT")
 	}
-
 	return avgRtt, nil
 }
+
+
+func scanPort(ip string, port int, resultsChan chan<- EndpointResult, wg *sync.WaitGroup) {
+	defer wg.Done()
+	protocol := "udp"
+	address := net.JoinHostPort(ip, strconv.Itoa(port))
+	
+	start := time.Now()
+	conn, err := net.DialTimeout(protocol, address, 1*time.Second)
+	latency := time.Since(start)
+
+	if err == nil {
+		conn.Close()
+		resultsChan <- EndpointResult{Endpoint: address, Latency: latency}
+	}
+}
+
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
+	fmt.Println("Step 1: Finding best IPs with ping...")
 	allIPs := append(generateIPv4Addresses(), generateIPv6Addresses()...)
-	fmt.Println("Starting to ping Cloudflare endpoints using Termux's ping tool...")
-
-	var wg sync.WaitGroup
-	resultsChan := make(chan PingResult, len(allIPs))
+	
+	var pingWg sync.WaitGroup
+	pingResultsChan := make(chan PingResult, len(allIPs))
 
 	for _, ip := range allIPs {
-		wg.Add(1)
+		pingWg.Add(1)
 		go func(ipAddr string) {
-			defer wg.Done()
+			defer pingWg.Done()
 			rtt, err := pingWithTermux(ipAddr)
 			if err == nil {
-				resultsChan <- PingResult{IP: ipAddr, RTT: rtt}
-			} else {
+				pingResultsChan <- PingResult{IP: ipAddr, RTT: rtt}
 			}
 		}(ip)
 	}
 
-	wg.Wait()
-	close(resultsChan)
+	pingWg.Wait()
+	close(pingResultsChan)
 
-	var results []PingResult
-	for result := range resultsChan {
-		results = append(results, result)
+	var bestIPs []PingResult
+	for result := range pingResultsChan {
+		bestIPs = append(bestIPs, result)
 	}
 
-	if len(results) == 0 {
-		fmt.Println("\n-------------------------------------------------------------")
-		fmt.Println("CRITICAL: No responsive IP addresses found.")
-		fmt.Println("Please check your internet connection or try again.")
-		fmt.Println("-------------------------------------------------------------")
+	if len(bestIPs) == 0 {
+		fmt.Println("Could not find any responsive IPs in Step 1. Exiting.")
 		return
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].RTT < results[j].RTT
+	sort.Slice(bestIPs, func(i, j int) bool {
+		return bestIPs[i].RTT < bestIPs[j].RTT
 	})
+    
+	fmt.Println("Step 1 Complete. Best IPs found.")
 
-	fmt.Println("\n--- Top 5 Results ---")
-	for i, result := range results {
+	fmt.Println("\nStep 2: Scanning ports on best IPs to find a full endpoint...")
+	
+	portsToScan := []int{2408, 500, 1701, 4500, 8886, 908, 8854, 878}
+
+	var portWg sync.WaitGroup
+	endpointResultsChan := make(chan EndpointResult, len(bestIPs)*len(portsToScan))
+    
+    scanLimit := 10
+    if len(bestIPs) < scanLimit {
+        scanLimit = len(bestIPs)
+    }
+
+	for _, ipResult := range bestIPs[:scanLimit] {
+		for _, port := range portsToScan {
+			portWg.Add(1)
+			go scanPort(ipResult.IP, port, endpointResultsChan, &portWg)
+		}
+	}
+    
+	portWg.Wait()
+	close(endpointResultsChan)
+
+	var finalResults []EndpointResult
+	for result := range endpointResultsChan {
+		finalResults = append(finalResults, result)
+	}
+
+	if len(finalResults) == 0 {
+		fmt.Println("\n-------------------------------------------------------------")
+		fmt.Println("CRITICAL: Could not find any open ports on the responsive IPs.")
+		fmt.Println("This might be due to network restrictions.")
+		fmt.Println("-------------------------------------------------------------")
+		return
+	}
+    
+    sort.Slice(finalResults, func(i, j int) bool {
+        return finalResults[i].Latency < finalResults[j].Latency
+    })
+
+
+	fmt.Println("\n--- Best Endpoint Found ---")
+	bestEndpoint := finalResults[0]
+	fmt.Printf("🏆 Best Endpoint: %s\n", bestEndpoint.Endpoint)
+	fmt.Printf("   Latency: %s\n\n", bestEndpoint.Latency)
+
+	fmt.Println("--- Top 5 Endpoints ---")
+	for i, result := range finalResults {
 		if i >= 5 {
 			break
 		}
-		fmt.Printf("%d. IP: %s - Average Ping: %s\n", i+1, result.IP, result.RTT)
-	}
-
-	fmt.Println("\n--- Best Endpoints ---")
-	
-	var bestIPv4 PingResult
-	for _, res := range results {
-		if net.ParseIP(res.IP).To4() != nil {
-			bestIPv4 = res
-			break
-		}
-	}
-	if bestIPv4.IP != "" {
-		fmt.Printf("Preferred IPV4: %s with a ping of %s\n", bestIPv4.IP, bestIPv4.RTT)
-	} else {
-		fmt.Println("No suitable IPv4 address was found.")
-	}
-
-	var bestIPv6 PingResult
-	for _, res := range results {
-		if net.ParseIP(res.IP).To4() == nil {
-			bestIPv6 = res
-			break
-		}
-	}
-	if bestIPv6.IP != "" {
-		fmt.Printf("Preferred IPV6: %s with a ping of %s\n", bestIPv6.IP, bestIPv6.RTT)
-	} else {
-		fmt.Println("No suitable IPv6 address was found.")
+		fmt.Printf("%d. Endpoint: %s (Latency: %s)\n", i+1, result.Endpoint, result.Latency)
 	}
 }
