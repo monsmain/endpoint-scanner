@@ -1,4 +1,4 @@
-<div align="center"> <h1>Endpoint-Checker</h1>
+<div align="center"> <h1>Endpoint scanner</h1>
 </div>
 <div align="center">
     <p>
