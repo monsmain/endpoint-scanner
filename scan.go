@@ -1,187 +1,148 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"io/ioutil"
-	"math/rand"
-	"net/http"
-	"os"
-	"os/exec"
-	"runtime"
+	"net"
 	"sort"
-	"strconv"
-	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type EndpointResult struct {
 	Endpoint string
-	Ping     float64
-	Loss     int
+	Ping     time.Duration
+	Protocol string
 }
 
-func generateIPv4Addresses() []string {
-	var ips []string
-	subnets := []string{
-		"162.159.192.", "162.159.193.", "162.159.195.",
-		"188.114.96.", "188.114.97.", "188.114.98.", "188.114.99.",
-	}
-	for _, subnet := range subnets {
-		for i := 0; i < 25; i++ {
-			ips = append(ips, fmt.Sprintf("%s%d", subnet, rand.Intn(256)))
-		}
-	}
-	return ips
-}
+func probeEndpoint(ip, protocol string, port int, resultsChan chan<- EndpointResult, wg *sync.WaitGroup, counter *uint64) {
+	defer wg.Done()
 
-func fileExists(filename string) bool {
-	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
-}
-
-func downloadWarperEndpoint() error {
-	var cpuArch string
-	switch runtime.GOARCH {
-	case "amd64":
-		cpuArch = "amd64"
-	case "386":
-		cpuArch = "386"
-	case "arm64":
-		cpuArch = "arm64"
-	case "arm":
-		cpuArch = "arm"
-	default:
-		return fmt.Errorf("unsupported architecture: %s", runtime.GOARCH)
-	}
-
-	url := fmt.Sprintf("https://raw.githubusercontent.com/Ptechgithub/warp/main/endip/%s", cpuArch)
-	fmt.Printf("Downloading 'warpendpoint' tool for %s architecture...\n", cpuArch)
-
-	resp, err := http.Get(url)
+	endpoint := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
+	
+	start := time.Now()
+	conn, err := net.DialTimeout(protocol, endpoint, 2*time.Second)
 	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
+		atomic.AddUint64(counter, 1) // Increment counter even on failure
+		return
 	}
-	defer resp.Body.Close()
+	defer conn.Close()
+	ping := time.Since(start)
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status: %s", resp.Status)
-	}
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	err = ioutil.WriteFile("warpendpoint", body, 0755)
-	if err != nil {
-		return fmt.Errorf("failed to save file: %w", err)
-	}
-
-	fmt.Println("Download complete.")
-	return nil
-}
-
-func displayProgressBar(done chan bool) {
-	for {
-		select {
-		case <-done:
+	if protocol == "udp" {
+		handshakePacket := []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+		_, err = conn.Write(handshakePacket)
+		if err != nil {
+			atomic.AddUint64(counter, 1)
 			return
-		default:
-			chars := []string{"|", "/", "-", "\\"}
-			for _, char := range chars {
-				fmt.Printf("\rScanning... %s", char)
-				time.Sleep(100 * time.Millisecond)
-			}
+		}
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buffer := make([]byte, 1)
+		_, err = conn.Read(buffer)
+		if err != nil {
+			atomic.AddUint64(counter, 1)
+			return
 		}
 	}
+    
+	resultsChan <- EndpointResult{Endpoint: endpoint, Ping: ping, Protocol: protocol}
+	atomic.AddUint64(counter, 1) // Increment counter on success
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
+	subnets := []string{
+		"162.159.192", "162.159.193", "162.159.195",
+		"188.114.96", "188.114.97", "188.114.98", "188.114.99",
+	}
+	
+	portsToScan := []int{4500, 5956, 8886, 2408, 908, 1701, 500, 878, 443}
+	protocolsToScan := []string{"tcp", "udp"}
 
-	if !fileExists("warpendpoint") {
-		err := downloadWarperEndpoint()
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+	var ipsToScan []string
+	for _, subnet := range subnets {
+		for i := 0; i <= 255; i++ {
+			ipsToScan = append(ipsToScan, fmt.Sprintf("%s.%d", subnet, i))
 		}
 	}
 
-	fmt.Println("Generating IP list...")
-	ips := generateIPv4Addresses()
-	ipFile, err := os.Create("ip.txt")
-	if err != nil {
-		fmt.Printf("Error creating ip.txt: %v\n", err)
-		os.Exit(1)
-	}
-	for _, ip := range ips {
-		fmt.Fprintln(ipFile, ip)
-	}
-	ipFile.Close()
+	totalJobs := len(ipsToScan) * len(portsToScan) * len(protocolsToScan)
+	fmt.Printf("Starting a comprehensive scan of %d IPs across %d ports (%d total probes).\n", len(ipsToScan), len(portsToScan), totalJobs)
+	fmt.Println("This will take a significant amount of time. Please be patient.")
 
-	done := make(chan bool)
-	go displayProgressBar(done)
+	var wg sync.WaitGroup
+	resultsChan := make(chan EndpointResult, 100)
+	
+	var progressCounter uint64
 
-	cmd := exec.Command("./warpendpoint")
-	cmd.Run()
+	concurrencyLimit := 200 
+	guard := make(chan struct{}, concurrencyLimit)
 
-	done <- true
-	fmt.Print("\rScan complete.          \n")
+	for _, protocol := range protocolsToScan {
+		for _, ip := range ipsToScan {
+			for _, port := range portsToScan {
+				wg.Add(1)
+				guard <- struct{}{}
 
-	resultFile, err := os.Open("result.csv")
-	if err != nil {
-		fmt.Println("\nCould not find result.csv. It seems no working endpoints were found.")
-		os.Exit(1)
-	}
-	defer resultFile.Close()
-
-	var results []EndpointResult
-	scanner := bufio.NewScanner(resultFile)
-	scanner.Scan() // Skip header line
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.Split(line, ",")
-		if len(parts) == 3 {
-			pingStr := strings.TrimSpace(strings.Replace(parts[2], "ms", "", -1))
-			ping, _ := strconv.ParseFloat(pingStr, 64)
-			loss, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
-
-			results = append(results, EndpointResult{
-				Endpoint: parts[0],
-				Loss:     loss,
-				Ping:     ping,
-			})
+				go func(p, i string, pt int) {
+					probeEndpoint(i, p, pt, resultsChan, &wg)
+					<-guard
+				}(protocol, ip, port)
+			}
 		}
 	}
 
-	if len(results) == 0 {
-		fmt.Println("No working endpoints found.")
-		return
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Ping < results[j].Ping
-	})
-
-	fmt.Println("\n--- Best Endpoint Found ---")
-	bestEndpoint := results[0]
-	fmt.Printf("🏆 Best Endpoint: %s\n", bestEndpoint.Endpoint)
-	fmt.Printf("   Ping: %.2f ms\n", bestEndpoint.Ping)
-	fmt.Printf("   Packet Loss: %d%%\n\n", bestEndpoint.Loss)
-	fmt.Println("(You can now use this Endpoint in your app)")
-
-	fmt.Println("\n--- Top 5 Endpoints ---")
-	for i, result := range results {
-		if i >= 5 {
-			break
+	go func() {
+		for {
+			time.Sleep(1 * time.Second)
+			progress := atomic.LoadUint64(&progressCounter)
+			if progress >= uint64(totalJobs) {
+				break
+			}
+			percentage := float64(progress) / float64(totalJobs) * 100
+			fmt.Printf("\rScanning... %.2f%% complete", percentage)
 		}
-		fmt.Printf("%d. Endpoint: %s (Ping: %.2f ms, Loss: %d%%)\n", i+1, result.Endpoint, result.Ping, result.Loss)
+	}()
+
+	wg.Wait()
+	close(resultsChan)
+	
+	fmt.Printf("\rScanning... 100.00%% complete\n")
+
+	var udpResults []EndpointResult
+	var tcpResults []EndpointResult
+
+	for result := range resultsChan {
+		if result.Protocol == "udp" {
+			udpResults = append(udpResults, result)
+		} else {
+			tcpResults = append(tcpResults, result)
+		}
 	}
 
-	os.Remove("ip.txt")
-	os.Remove("result.csv")
+	sort.Slice(udpResults, func(i, j int) bool { return udpResults[i].Ping < udpResults[j].Ping })
+	sort.Slice(tcpResults, func(i, j int) bool { return tcpResults[i].Ping < tcpResults[j].Ping })
+
+	fmt.Println("\n--- Scan Complete! ---")
+
+	if len(udpResults) > 0 {
+		fmt.Println("\n--- Best UDP Endpoint ---")
+		bestUDP := udpResults[0]
+		pingInMS := float64(bestUDP.Ping.Nanoseconds()) / 1e6
+		fmt.Printf("🏆 Endpoint: %s (UDP)\n", bestUDP.Endpoint)
+		fmt.Printf("   Ping: %.2f ms\n", pingInMS)
+	} else {
+		fmt.Println("\nNo working UDP endpoints found.")
+	}
+
+	if len(tcpResults) > 0 {
+		fmt.Println("\n--- Best TCP Endpoint ---")
+		bestTCP := tcpResults[0]
+		pingInMS := float64(bestTCP.Ping.Nanoseconds()) / 1e6
+		fmt.Printf("🏆 Endpoint: %s (TCP)\n", bestTCP.Endpoint)
+		fmt.Printf("   Ping: %.2f ms\n", pingInMS)
+	} else {
+		fmt.Println("\nNo working TCP endpoints found.")
+	}
+    
+    fmt.Println("\n(The lower the ms, the faster the ping)")
 }
