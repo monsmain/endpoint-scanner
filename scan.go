@@ -19,7 +19,7 @@ type PingResult struct {
 }
 
 type EndpointResult struct {
-	Endpoint string 
+	Endpoint string
 	Latency  time.Duration
 }
 
@@ -49,7 +49,6 @@ func generateIPv6Addresses() []string {
 	}
 	return ips
 }
-
 
 func pingWithTermux(ipAddr string) (time.Duration, error) {
 	cmd := exec.Command("ping", "-c", "3", "-W", "2", ipAddr)
@@ -82,12 +81,11 @@ func pingWithTermux(ipAddr string) (time.Duration, error) {
 	return avgRtt, nil
 }
 
-
 func scanPort(ip string, port int, resultsChan chan<- EndpointResult, wg *sync.WaitGroup) {
 	defer wg.Done()
 	protocol := "udp"
 	address := net.JoinHostPort(ip, strconv.Itoa(port))
-	
+
 	start := time.Now()
 	conn, err := net.DialTimeout(protocol, address, 1*time.Second)
 	latency := time.Since(start)
@@ -98,13 +96,12 @@ func scanPort(ip string, port int, resultsChan chan<- EndpointResult, wg *sync.W
 	}
 }
 
-
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	fmt.Println("Step 1: Finding best IPs with ping...")
 	allIPs := append(generateIPv4Addresses(), generateIPv6Addresses()...)
-	
+
 	var pingWg sync.WaitGroup
 	pingResultsChan := make(chan PingResult, len(allIPs))
 
@@ -128,27 +125,27 @@ func main() {
 	}
 
 	if len(bestIPs) == 0 {
-		fmt.Println("Could not find any responsive IPs in Step 1. Exiting.")
+		fmt.Println("No responsive IPs found in Step 1. Exiting.")
 		return
 	}
 
 	sort.Slice(bestIPs, func(i, j int) bool {
 		return bestIPs[i].RTT < bestIPs[j].RTT
 	})
-    
+
 	fmt.Println("Step 1 Complete. Best IPs found.")
 
 	fmt.Println("\nStep 2: Scanning ports on best IPs to find a full endpoint...")
-	
+
 	portsToScan := []int{2408, 500, 1701, 4500, 8886, 908, 8854, 878}
 
 	var portWg sync.WaitGroup
 	endpointResultsChan := make(chan EndpointResult, len(bestIPs)*len(portsToScan))
-    
-    scanLimit := 10
-    if len(bestIPs) < scanLimit {
-        scanLimit = len(bestIPs)
-    }
+
+	scanLimit := 10
+	if len(bestIPs) < scanLimit {
+		scanLimit = len(bestIPs)
+	}
 
 	for _, ipResult := range bestIPs[:scanLimit] {
 		for _, port := range portsToScan {
@@ -156,7 +153,7 @@ func main() {
 			go scanPort(ipResult.IP, port, endpointResultsChan, &portWg)
 		}
 	}
-    
+
 	portWg.Wait()
 	close(endpointResultsChan)
 
@@ -172,22 +169,25 @@ func main() {
 		fmt.Println("-------------------------------------------------------------")
 		return
 	}
-    
-    sort.Slice(finalResults, func(i, j int) bool {
-        return finalResults[i].Latency < finalResults[j].Latency
-    })
 
+	sort.Slice(finalResults, func(i, j int) bool {
+		return finalResults[i].Latency < finalResults[j].Latency
+	})
 
 	fmt.Println("\n--- Best Endpoint Found ---")
 	bestEndpoint := finalResults[0]
-	fmt.Printf("🏆 Best Endpoint: %s\n", bestEndpoint.Endpoint)
-	fmt.Printf("   Latency: %s\n\n", bestEndpoint.Latency)
+	latencyInMS := float64(bestEndpoint.Latency.Nanoseconds()) / 1e6
 
-	fmt.Println("--- Top 5 Endpoints ---")
+	fmt.Printf("🏆 Best Endpoint: %s\n", bestEndpoint.Endpoint)
+	fmt.Printf("   Connection Speed: %.2f ms\n\n", latencyInMS)
+	fmt.Println("(The lower the ms, the faster the connection)")
+
+	fmt.Println("\n--- Top 5 Endpoints ---")
 	for i, result := range finalResults {
 		if i >= 5 {
 			break
 		}
-		fmt.Printf("%d. Endpoint: %s (Latency: %s)\n", i+1, result.Endpoint, result.Latency)
+		latencyInMS := float64(result.Latency.Nanoseconds()) / 1e6
+		fmt.Printf("%d. Endpoint: %s (Speed: %.2f ms)\n", i+1, result.Endpoint, latencyInMS)
 	}
 }
