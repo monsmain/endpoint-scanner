@@ -12,6 +12,7 @@ import (
 type EndpointResult struct {
 	Endpoint string
 	Ping     time.Duration
+	Protocol string
 }
 
 func generateIPv4Addresses() []string {
@@ -28,35 +29,34 @@ func generateIPv4Addresses() []string {
 	return ips
 }
 
-
-func probeEndpoint(ip string, port int, resultsChan chan<- EndpointResult, wg *sync.WaitGroup) {
+func probeEndpoint(ip, protocol string, port int, resultsChan chan<- EndpointResult, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	endpoint := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
-	conn, err := net.DialTimeout("udp", endpoint, 2*time.Second)
+	
+	start := time.Now()
+	conn, err := net.DialTimeout(protocol, endpoint, 2*time.Second)
 	if err != nil {
 		return 
 	}
 	defer conn.Close()
+    ping := time.Since(start)
 
-	handshakePacket := []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-
-	start := time.Now()
-	_, err = conn.Write(handshakePacket)
-	if err != nil {
-		return
+	if protocol == "udp" {
+		handshakePacket := []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+		_, err = conn.Write(handshakePacket)
+		if err != nil {
+			return
+		}
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buffer := make([]byte, 1)
+		_, err = conn.Read(buffer)
+		if err != nil {
+			return
+		}
 	}
-
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-
-
-	buffer := make([]byte, 1)
-	_, err = conn.Read(buffer)
-	ping := time.Since(start)
-
-	if err == nil {
-		resultsChan <- EndpointResult{Endpoint: endpoint, Ping: ping}
-	}
+    
+	resultsChan <- EndpointResult{Endpoint: endpoint, Ping: ping, Protocol: protocol}
 }
 
 func main() {
@@ -65,59 +65,73 @@ func main() {
 	fmt.Println("Generating IP list...")
 	ips := generateIPv4Addresses()
 
-	fmt.Println("Probing endpoints with custom handshake... This may take a moment.")
+	fmt.Println("Probing TCP and UDP endpoints... This may take a moment.")
 
-	portsToScan := []int{2408, 500, 1701, 4500, 8886, 908, 8854, 878}
+	portsToScan := []int{2408, 500, 1701, 4500, 8886, 908, 8854, 878, 443, 80, 8080}
+	protocolsToScan := []string{"udp", "tcp"}
 
 	var wg sync.WaitGroup
-	resultsChan := make(chan EndpointResult, len(ips)*len(portsToScan))
+	resultsChan := make(chan EndpointResult, len(ips)*len(portsToScan)*len(protocolsToScan))
 
 	concurrencyLimit := 100
 	guard := make(chan struct{}, concurrencyLimit)
 
-	for _, ip := range ips {
-		for _, port := range portsToScan {
-			wg.Add(1)
-			guard <- struct{}{} 
+	for _, protocol := range protocolsToScan {
+		for _, ip := range ips {
+			for _, port := range portsToScan {
+				wg.Add(1)
+				guard <- struct{}{} 
 
-			go func(ip string, port int) {
-				probeEndpoint(ip, port, resultsChan, &wg)
-				<-guard 
-			}(ip, port)
+				go func(p, i string, pt int) {
+					probeEndpoint(i, p, pt, resultsChan, &wg)
+					<-guard 
+				}(protocol, ip, port)
+			}
 		}
 	}
 
 	wg.Wait()
 	close(resultsChan)
 
-	var results []EndpointResult
+	var udpResults []EndpointResult
+	var tcpResults []EndpointResult
+
 	for result := range resultsChan {
-		results = append(results, result)
+		if result.Protocol == "udp" {
+			udpResults = append(udpResults, result)
+		} else {
+			tcpResults = append(tcpResults, result)
+		}
 	}
 
-	if len(results) == 0 {
-		fmt.Println("\nCRITICAL: Could not find any working endpoints.")
-		fmt.Println("This might be due to network restrictions or an unlucky IP batch. Try running again.")
-		return
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Ping < results[j].Ping
+	sort.Slice(udpResults, func(i, j int) bool {
+		return udpResults[i].Ping < udpResults[j].Ping
+	})
+	sort.Slice(tcpResults, func(i, j int) bool {
+		return tcpResults[i].Ping < tcpResults[j].Ping
 	})
 
-	fmt.Println("\n--- Best Endpoint Found ---")
-	bestEndpoint := results[0]
+	fmt.Println("\n--- Scan Complete! ---")
 
-	fmt.Printf("🏆 Best Endpoint: %s\n", bestEndpoint.Endpoint)
-	fmt.Printf("   Real Ping: %.2f ms\n\n", float64(bestEndpoint.Ping.Nanoseconds())/1e6)
-	fmt.Println("(The lower the ms, the faster the ping)")
-
-	fmt.Println("\n--- Top 5 Endpoints ---")
-	for i, result := range results {
-		if i >= 5 {
-			break
-		}
-		pingInMS := float64(result.Ping.Nanoseconds()) / 1e6
-		fmt.Printf("%d. Endpoint: %s (Ping: %.2f ms)\n", i+1, result.Endpoint, pingInMS)
+	if len(udpResults) > 0 {
+		fmt.Println("\n--- Best UDP Endpoint ---")
+		bestUDP := udpResults[0]
+		pingInMS := float64(bestUDP.Ping.Nanoseconds()) / 1e6
+		fmt.Printf("🏆 Endpoint: %s (UDP)\n", bestUDP.Endpoint)
+		fmt.Printf("   Ping: %.2f ms\n", pingInMS)
+	} else {
+		fmt.Println("\nNo working UDP endpoints found.")
 	}
+
+	if len(tcpResults) > 0 {
+		fmt.Println("\n--- Best TCP Endpoint ---")
+		bestTCP := tcpResults[0]
+		pingInMS := float64(bestTCP.Ping.Nanoseconds()) / 1e6
+		fmt.Printf("🏆 Endpoint: %s (TCP)\n", bestTCP.Endpoint)
+		fmt.Printf("   Ping: %.2f ms\n", pingInMS)
+	} else {
+		fmt.Println("\nNo working TCP endpoints found.")
+	}
+    
+    fmt.Println("\n(The lower the ms, the faster the ping)")
 }
