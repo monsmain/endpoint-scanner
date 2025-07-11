@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"math/rand"
 	"net"
+	"os/exec"
+	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
-
-	"github.com/go-ping/ping"
 )
 
 type PingResult struct {
@@ -23,7 +26,7 @@ func generateIPv4Addresses() []string {
 		"188.114.96.", "188.114.97.", "188.114.98.", "188.114.99.",
 	}
 	for _, subnet := range subnets {
-		for i := 0; i < 10; i++ {
+		for i := 0; i < 20; i++ { 
 			ips = append(ips, fmt.Sprintf("%s%d", subnet, rand.Intn(256)))
 		}
 	}
@@ -34,7 +37,7 @@ func generateIPv6Addresses() []string {
 	var ips []string
 	prefixes := []string{"2606:4700:d0::", "2606:4700:d1::"}
 	for _, prefix := range prefixes {
-		for i := 0; i < 10; i++ {
+		for i := 0; i < 20; i++ { 
 			ip := fmt.Sprintf("%s%x:%x:%x:%x",
 				prefix, rand.Intn(0xffff), rand.Intn(0xffff), rand.Intn(0xffff), rand.Intn(0xffff))
 			ips = append(ips, ip)
@@ -43,12 +46,51 @@ func generateIPv6Addresses() []string {
 	return ips
 }
 
+func pingWithTermux(ipAddr string) (time.Duration, error) {
+
+	cmd := exec.Command("ping", "-c", "3", "-W", "2", ipAddr)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return 0, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	var avgRtt time.Duration
+	rttRegex := regexp.MustCompile(`rtt min/avg/max/mdev = [\d.]+/([\d.]+)/[\d.]+/[\d.]+ ms`)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		matches := rttRegex.FindStringSubmatch(line)
+		if len(matches) > 1 {
+			avg, err := strconv.ParseFloat(matches[1], 64)
+			if err == nil {
+				avgRtt = time.Duration(avg * float64(time.Millisecond))
+			}
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+
+		return 0, fmt.Errorf("no response from host")
+	}
+
+	if avgRtt == 0 {
+		return 0, fmt.Errorf("could not parse RTT")
+	}
+
+	return avgRtt, nil
+}
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	allIPs := append(generateIPv4Addresses(), generateIPv6Addresses()...)
-	fmt.Println("Starting to ping Cloudflare endpoints...")
-	fmt.Println("NOTE: This program requires administrator/root privileges to run.")
+	fmt.Println("Starting to ping Cloudflare endpoints using Termux's ping tool...")
 
 	var wg sync.WaitGroup
 	resultsChan := make(chan PingResult, len(allIPs))
@@ -57,26 +99,11 @@ func main() {
 		wg.Add(1)
 		go func(ipAddr string) {
 			defer wg.Done()
-			pinger, err := ping.NewPinger(ipAddr)
-			if err != nil {
-				// Print error if the pinger cannot be created for an IP
-				fmt.Printf("ERROR: Failed to create pinger for %s: %v\n", ipAddr, err)
-				return
+			rtt, err := pingWithTermux(ipAddr)
+			if err == nil {
+				resultsChan <- PingResult{IP: ipAddr, RTT: rtt}
+			} else {
 			}
-
-			pinger.SetPrivileged(true)
-			pinger.Count = 3
-			pinger.Timeout = time.Second * 2
-
-			pinger.OnFinish = func(stats *ping.Statistics) {
-				if stats.PacketsRecv > 0 {
-					resultsChan <- PingResult{IP: stats.Addr, RTT: stats.AvgRtt}
-				} else {
-					// Notify which IP did not respond
-					fmt.Printf("INFO: No response from %s (Timeout or Host Unreachable)\n", stats.Addr)
-				}
-			}
-			pinger.Run()
 		}(ip)
 	}
 
@@ -91,10 +118,7 @@ func main() {
 	if len(results) == 0 {
 		fmt.Println("\n-------------------------------------------------------------")
 		fmt.Println("CRITICAL: No responsive IP addresses found.")
-		fmt.Println("Please check the following:")
-		fmt.Println("1. Did you run this program with 'sudo' (Linux/Mac) or as Administrator (Windows)?")
-		fmt.Println("2. Is your internet connection working?")
-		fmt.Println("3. Is a firewall blocking ICMP packets?")
+		fmt.Println("Please check your internet connection or try again.")
 		fmt.Println("-------------------------------------------------------------")
 		return
 	}
