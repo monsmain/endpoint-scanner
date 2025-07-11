@@ -23,13 +23,12 @@ func probeEndpoint(ip, protocol string, port int, resultsChan chan<- EndpointRes
 	start := time.Now()
 	conn, err := net.DialTimeout(protocol, endpoint, 2*time.Second)
 	if err != nil {
-		atomic.AddUint64(counter, 1) // Increment counter even on failure
+		atomic.AddUint64(counter, 1)
 		return
 	}
 	defer conn.Close()
 	ping := time.Since(start)
 
-	// For UDP, we perform a basic handshake check
 	if protocol == "udp" {
 		handshakePacket := []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 		_, err = conn.Write(handshakePacket)
@@ -47,7 +46,7 @@ func probeEndpoint(ip, protocol string, port int, resultsChan chan<- EndpointRes
 	}
     
 	resultsChan <- EndpointResult{Endpoint: endpoint, Ping: ping, Protocol: protocol}
-	atomic.AddUint64(counter, 1) // Increment counter on success
+	atomic.AddUint64(counter, 1)
 }
 
 func main() {
@@ -75,7 +74,7 @@ func main() {
 	
 	var progressCounter uint64
 
-	concurrencyLimit := 200 // You can increase this if you have a strong connection
+	concurrencyLimit := 200
 	guard := make(chan struct{}, concurrencyLimit)
 
 	for _, protocol := range protocolsToScan {
@@ -85,14 +84,14 @@ func main() {
 				guard <- struct{}{}
 
 				go func(p, i string, pt int) {
-					probeEndpoint(i, p, pt, resultsChan, &wg)
+					// This is the line that was fixed
+					probeEndpoint(i, p, pt, resultsChan, &wg, &progressCounter)
 					<-guard
 				}(protocol, ip, port)
 			}
 		}
 	}
 
-	// Progress bar goroutine
 	go func() {
 		for {
 			time.Sleep(1 * time.Second)
@@ -108,7 +107,6 @@ func main() {
 	wg.Wait()
 	close(resultsChan)
 	
-	// Ensure the progress bar finishes at 100%
 	fmt.Printf("\rScanning... 100.00%% complete\n")
 
 	var udpResults []EndpointResult
