@@ -132,6 +132,11 @@ func main() {
 	sort.Slice(bestIPs, func(i, j int) bool {
 		return bestIPs[i].RTT < bestIPs[j].RTT
 	})
+    
+    ipToPing := make(map[string]time.Duration)
+    for _, ipResult := range bestIPs {
+        ipToPing[ipResult.IP] = ipResult.RTT
+    }
 
 	fmt.Println("Step 1 Complete. Best IPs found.")
 
@@ -176,18 +181,21 @@ func main() {
 
 	fmt.Println("\n--- Best Endpoint Found ---")
 	bestEndpoint := finalResults[0]
-	latencyInMS := float64(bestEndpoint.Latency.Nanoseconds()) / 1e6
+    
+    host, _, _ := net.SplitHostPort(bestEndpoint.Endpoint)
+    realPing := ipToPing[host]
 
 	fmt.Printf("🏆 Best Endpoint: %s\n", bestEndpoint.Endpoint)
-	fmt.Printf("   Connection Speed: %.2f ms\n\n", latencyInMS)
-	fmt.Println("(The lower the ms, the faster the connection)")
+	fmt.Printf("   Real Ping: %.2f ms\n\n", float64(realPing.Nanoseconds())/1e6)
+	fmt.Println("(The lower the ms, the faster the ping)")
 
 	fmt.Println("\n--- Top 5 Endpoints ---")
 	for i, result := range finalResults {
 		if i >= 5 {
 			break
 		}
-		latencyInMS := float64(result.Latency.Nanoseconds()) / 1e6
-		fmt.Printf("%d. Endpoint: %s (Speed: %.2f ms)\n", i+1, result.Endpoint, latencyInMS)
+        host, _, _ := net.SplitHostPort(result.Endpoint)
+        realPing := ipToPing[host]
+		fmt.Printf("%d. Endpoint: %s (Ping: %.2f ms)\n", i+1, result.Endpoint, float64(realPing.Nanoseconds())/1e6)
 	}
 }
