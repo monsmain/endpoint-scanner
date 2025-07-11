@@ -1,4 +1,4 @@
-<div align="center"> <h1>اندپوینت چکر</h1>
+<div align="center"> <h1>اسکنر اندپوینت</h1>
 </div>
 <div align="center">
     <p>
