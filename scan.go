@@ -16,19 +16,22 @@ type EndpointResult struct {
 }
 
 func probeEndpoint(ip, protocol string, port int, resultsChan chan<- EndpointResult, wg *sync.WaitGroup, counter *uint64) {
+	// aWG (another WaitGroup) ro be Done() tabdil kardam
 	defer wg.Done()
 
 	endpoint := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
 	
 	start := time.Now()
+	// az DialTimeout estefadeh kardam baraye connection haye sari'tar
 	conn, err := net.DialTimeout(protocol, endpoint, 2*time.Second)
 	if err != nil {
-		atomic.AddUint64(counter, 1)
+		atomic.AddUint64(counter, 1) // dar soorat khata ham counter ezafe mishe
 		return
 	}
 	defer conn.Close()
 	ping := time.Since(start)
 
+	// baraye UDP, yek handshake sade anjam midim
 	if protocol == "udp" {
 		handshakePacket := []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 		_, err = conn.Write(handshakePacket)
@@ -36,8 +39,9 @@ func probeEndpoint(ip, protocol string, port int, resultsChan chan<- EndpointRes
 			atomic.AddUint64(counter, 1)
 			return
 		}
+		// baraye daryaft pasokh, 2 saniye sabr mikonim
 		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		buffer := make([]byte, 1)
+		buffer := make([]byte, 1) // yek buffer koochak kafi hast
 		_, err = conn.Read(buffer)
 		if err != nil {
 			atomic.AddUint64(counter, 1)
@@ -46,7 +50,7 @@ func probeEndpoint(ip, protocol string, port int, resultsChan chan<- EndpointRes
 	}
     
 	resultsChan <- EndpointResult{Endpoint: endpoint, Ping: ping, Protocol: protocol}
-	atomic.AddUint64(counter, 1)
+	atomic.AddUint64(counter, 1) // dar soorat movaffaghiyat ham ezafe mishe
 }
 
 func main() {
@@ -74,7 +78,7 @@ func main() {
 	
 	var progressCounter uint64
 
-	concurrencyLimit := 200
+	concurrencyLimit := 200 // Shoma mitavanid in adad ra baraye ertebat qavitar afzayesh dahid
 	guard := make(chan struct{}, concurrencyLimit)
 
 	for _, protocol := range protocolsToScan {
@@ -84,7 +88,6 @@ func main() {
 				guard <- struct{}{}
 
 				go func(p, i string, pt int) {
-					// This is the line that was fixed
 					probeEndpoint(i, p, pt, resultsChan, &wg, &progressCounter)
 					<-guard
 				}(protocol, ip, port)
@@ -92,14 +95,17 @@ func main() {
 		}
 	}
 
+	// Goroutine baraye namayesh navar pishraft
 	go func() {
 		for {
 			time.Sleep(1 * time.Second)
 			progress := atomic.LoadUint64(&progressCounter)
+			// Vaghti hame karha anjam shod, az halghe kharej sho
 			if progress >= uint64(totalJobs) {
 				break
 			}
 			percentage := float64(progress) / float64(totalJobs) * 100
+			// ba \r, khat badi chap nemishe va roye haman khat update mishe
 			fmt.Printf("\rScanning... %.2f%% complete", percentage)
 		}
 	}()
@@ -107,6 +113,7 @@ func main() {
 	wg.Wait()
 	close(resultsChan)
 	
+	// baraye inke navar pishraft dar 100% tamam shavad
 	fmt.Printf("\rScanning... 100.00%% complete\n")
 
 	var udpResults []EndpointResult
