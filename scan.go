@@ -29,6 +29,7 @@ func probeEndpoint(ip, protocol string, port int, resultsChan chan<- EndpointRes
 	defer conn.Close()
 	ping := time.Since(start)
 
+	// For UDP, we perform a basic handshake check
 	if protocol == "udp" {
 		handshakePacket := []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 		_, err = conn.Write(handshakePacket)
@@ -74,7 +75,7 @@ func main() {
 	
 	var progressCounter uint64
 
-	concurrencyLimit := 200 
+	concurrencyLimit := 200 // You can increase this if you have a strong connection
 	guard := make(chan struct{}, concurrencyLimit)
 
 	for _, protocol := range protocolsToScan {
@@ -91,6 +92,7 @@ func main() {
 		}
 	}
 
+	// Progress bar goroutine
 	go func() {
 		for {
 			time.Sleep(1 * time.Second)
@@ -106,6 +108,7 @@ func main() {
 	wg.Wait()
 	close(resultsChan)
 	
+	// Ensure the progress bar finishes at 100%
 	fmt.Printf("\rScanning... 100.00%% complete\n")
 
 	var udpResults []EndpointResult
