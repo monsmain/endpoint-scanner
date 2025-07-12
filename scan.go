@@ -81,9 +81,8 @@ func pingWithTermux(ipAddr string) (time.Duration, error) {
 	return avgRtt, nil
 }
 
-func scanPort(ip string, port int, resultsChan chan<- EndpointResult, wg *sync.WaitGroup) {
+func scanPort(ip string, port int, protocol string, resultsChan chan<- EndpointResult, wg *sync.WaitGroup) {
 	defer wg.Done()
-	protocol := "udp"
 	address := net.JoinHostPort(ip, strconv.Itoa(port))
 
 	start := time.Now()
@@ -92,7 +91,8 @@ func scanPort(ip string, port int, resultsChan chan<- EndpointResult, wg *sync.W
 
 	if err == nil {
 		conn.Close()
-		resultsChan <- EndpointResult{Endpoint: address, Latency: latency}
+		endpointAddress := fmt.Sprintf("%s (%s)", address, protocol)
+		resultsChan <- EndpointResult{Endpoint: endpointAddress, Latency: latency}
 	}
 }
 
@@ -140,12 +140,13 @@ func main() {
 
 	fmt.Println("Step 1 Complete. Best IPs found.")
 
-	fmt.Println("\nStep 2: Scanning ports on best IPs to find a full endpoint...")
+	fmt.Println("\nStep 2: Scanning ports on best IPs to find a full endpoint (TCP & UDP)...")
 
 	portsToScan := []int{2408, 500, 1701, 4500, 8886, 908, 8854, 878}
+	protocolsToScan := []string{"udp", "tcp"}
 
 	var portWg sync.WaitGroup
-	endpointResultsChan := make(chan EndpointResult, len(bestIPs)*len(portsToScan))
+	endpointResultsChan := make(chan EndpointResult, len(bestIPs)*len(portsToScan)*len(protocolsToScan))
 
 	scanLimit := 10
 	if len(bestIPs) < scanLimit {
@@ -154,8 +155,10 @@ func main() {
 
 	for _, ipResult := range bestIPs[:scanLimit] {
 		for _, port := range portsToScan {
-			portWg.Add(1)
-			go scanPort(ipResult.IP, port, endpointResultsChan, &portWg)
+			for _, proto := range protocolsToScan {
+				portWg.Add(1)
+				go scanPort(ipResult.IP, port, proto, endpointResultsChan, &portWg)
+			}
 		}
 	}
 
@@ -182,7 +185,7 @@ func main() {
 	fmt.Println("\n--- Best Endpoint Found ---")
 	bestEndpoint := finalResults[0]
     
-    host, _, _ := net.SplitHostPort(bestEndpoint.Endpoint)
+    host, _, _ := net.SplitHostPort(bestEndpoint.Endpoint[:len(bestEndpoint.Endpoint)-6])
     realPing := ipToPing[host]
 
 	fmt.Printf("🏆 Best Endpoint: %s\n", bestEndpoint.Endpoint)
@@ -194,7 +197,7 @@ func main() {
 		if i >= 5 {
 			break
 		}
-        host, _, _ := net.SplitHostPort(result.Endpoint)
+        host, _, _ := net.SplitHostPort(result.Endpoint[:len(result.Endpoint)-6])
         realPing := ipToPing[host]
 		fmt.Printf("%d. Endpoint: %s (Ping: %.2f ms)\n", i+1, result.Endpoint, float64(realPing.Nanoseconds())/1e6)
 	}
