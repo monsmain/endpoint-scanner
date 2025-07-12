@@ -97,7 +97,6 @@ func scanPort(ip string, port int, protocol string, timeout time.Duration, resul
 }
 
 func main() {
-
 	tcpTimeout := 5 * time.Second
 	udpTimeout := 5 * time.Second
 
@@ -143,22 +142,26 @@ func main() {
 	}
 
 	fmt.Println("Step 1 Complete. Best IPs found.")
-	fmt.Println("\nStep 2: Scanning ports on best IPs (TCP & UDP)...")
+	fmt.Println("\nStep 2: Scanning specific TCP and UDP ports on all found IPs...")
 
-        tcpPorts := []int{443, 8886, 908, 8854, 4198, 955, 988, 3854, 894, 7156, 1074, 939, 864, 854, 1070, 3476, 1387, 7559, 890, 1018}
-        udpPorts := []int{500, 1701, 4500, 2408, 878, 2371}
+	tcpPorts := []int{443, 8886, 908, 8854, 4198, 955, 988, 3854, 894, 7156, 1074, 939, 864, 854, 1070, 3476, 1387, 7559, 890, 1018}
+	udpPorts := []int{500, 1701, 4500, 2408, 878, 2371}
+
 	var portWg sync.WaitGroup
-	endpointResultsChan := make(chan EndpointResult, len(bestIPs)*len(portsToScan)*2)
+	endpointResultsChan := make(chan EndpointResult, len(bestIPs)*(len(tcpPorts)+len(udpPorts)))
 
-	scanLimit := 30
-	if len(bestIPs) < scanLimit {
-		scanLimit = len(bestIPs)
+	// Scan TCP ports
+	for _, ipResult := range bestIPs {
+		for _, port := range tcpPorts {
+			portWg.Add(1)
+			go scanPort(ipResult.IP, port, "tcp", tcpTimeout, endpointResultsChan, &portWg)
+		}
 	}
 
-	for _, ipResult := range bestIPs[:scanLimit] {
-		for _, port := range portsToScan {
-			portWg.Add(2)
-			go scanPort(ipResult.IP, port, "tcp", tcpTimeout, endpointResultsChan, &portWg)
+	// Scan UDP ports
+	for _, ipResult := range bestIPs {
+		for _, port := range udpPorts {
+			portWg.Add(1)
 			go scanPort(ipResult.IP, port, "udp", udpTimeout, endpointResultsChan, &portWg)
 		}
 	}
