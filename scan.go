@@ -149,7 +149,7 @@ func main() {
 	var portWg sync.WaitGroup
 	endpointResultsChan := make(chan EndpointResult, len(bestIPs)*len(portsToScan)*2)
 
-	scanLimit := 10
+	scanLimit := 30
 	if len(bestIPs) < scanLimit {
 		scanLimit = len(bestIPs)
 	}
