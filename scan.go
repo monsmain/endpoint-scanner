@@ -97,11 +97,9 @@ func scanPort(ip string, port int, protocol string, timeout time.Duration, resul
 }
 
 func main() {
-	// --- Configuration ---
-	// Increase the TCP timeout to give it a better chance in slow or filtered networks.
-	tcpTimeout := 3 * time.Second
-	udpTimeout := 1 * time.Second
-	// --- End Configuration ---
+
+	tcpTimeout := 5 * time.Second
+	udpTimeout := 5 * time.Second
 
 	rand.Seed(time.Now().UnixNano())
 
@@ -147,7 +145,7 @@ func main() {
 	fmt.Println("Step 1 Complete. Best IPs found.")
 	fmt.Println("\nStep 2: Scanning ports on best IPs (TCP & UDP)...")
 
-	portsToScan := []int{443, 2408, 500, 1701, 4500, 8886, 908, 8854, 878}
+	portsToScan := []int{443, 2408, 500, 1701, 4500, 8886, 908, 8854, 878, 4198, 955, 988, 3854, 894, 7156, 1074, 2371, 939, 864, 854, 1070, 3476, 1387, 7559, 890, 1018}
 	var portWg sync.WaitGroup
 	endpointResultsChan := make(chan EndpointResult, len(bestIPs)*len(portsToScan)*2)
 
