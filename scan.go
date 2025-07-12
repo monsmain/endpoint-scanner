@@ -83,7 +83,7 @@ func generateIPv6Addresses() []string {
 
 func main() {
 	// --- Configuration ---
-	tcpTimeout := 10 * time.Second // Increased timeout
+	tcpTimeout := 7 * time.Second // Increased timeout
 	// udpTimeout := 3 * time.Second
 	numWorkers := 20 // A controlled number of workers for balance
 	// --- End Configuration ---
@@ -98,7 +98,7 @@ func main() {
 	fmt.Printf("Generated %d unique IPs to test.\n", len(allIPs))
 	fmt.Println("\nStep 2: Starting balanced scan...")
 
-	tcpPorts := []int{8886, 908, 8854, 4198, 955, 988, 3854, 894, 7156, 1074, 939, 864, 854, 1070, 3476, 1387, 7559, 890, 1018}
+	tcpPorts := []int{8886}
 	// udpPorts := []int{500, 1701, 4500, 2408, 878, 2371}
 
 	jobs := make(chan ScanJob)
