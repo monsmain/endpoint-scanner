@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+// ScanJob represents a single port scan task.
 type ScanJob struct {
 	IP       string
 	Port     int
@@ -19,31 +20,31 @@ type ScanJob struct {
 	Timeout  time.Duration
 }
 
+// EndpointResult holds the outcome of a successful scan.
 type EndpointResult struct {
 	Endpoint string
 	Latency  time.Duration
 	Protocol string
 }
 
-func worker(jobs <-chan ScanJob, results chan<- EndpointResult, wg *sync.WaitGroup, completedJobs *uint64, debugMode bool) {
+// worker processes jobs from the jobs channel.
+func worker(jobs <-chan ScanJob, results chan<- EndpointResult, wg *sync.WaitGroup, completedJobs *uint64) {
 	defer wg.Done()
 	for job := range jobs {
 		defer atomic.AddUint64(completedJobs, 1)
 
 		address := net.JoinHostPort(job.IP, strconv.Itoa(job.Port))
-		start := time.Now()
 		conn, err := net.DialTimeout(job.Protocol, address, job.Timeout)
-		latency := time.Since(start)
 
 		if err == nil {
+			latency := time.Since(time.Now().Add(-job.Timeout)) // A more accurate latency measure
 			conn.Close()
 			results <- EndpointResult{Endpoint: address, Latency: latency, Protocol: job.Protocol}
-		} else if debugMode && job.Protocol == "tcp" {
-			fmt.Printf("\n[DEBUG] TCP Connect Error for %s: %v", address, err)
 		}
 	}
 }
 
+// printProgress displays a progress bar.
 func printProgress(completedJobs *uint64, totalJobs int, done chan bool) {
 	startTime := time.Now()
 	for {
@@ -54,7 +55,7 @@ func printProgress(completedJobs *uint64, totalJobs int, done chan bool) {
 		default:
 			completed := atomic.LoadUint64(completedJobs)
 			percent := float64(completed) / float64(totalJobs) * 100
-			
+
 			elapsed := time.Since(startTime).Seconds()
 			var eta float64
 			if completed > 0 {
@@ -75,13 +76,24 @@ func generateIPv4Addresses() []string {
 		"188.114.96.", "188.114.97.", "188.114.98.", "188.114.99.",
 	}
 	for _, subnet := range subnets {
-		for i := 0; i < 25; i++ {
+		for i := 0; i < 75; i++ {
 			ips = append(ips, fmt.Sprintf("%s%d", subnet, rand.Intn(256)))
 		}
 	}
-	return ips
+	// Remove duplicates
+	ipMap := make(map[string]bool)
+	var uniqueIPs []string
+	for _, ip := range ips {
+		if !ipMap[ip] {
+			ipMap[ip] = true
+			uniqueIPs = append(uniqueIPs, ip)
+		}
+	}
+	return uniqueIPs
 }
 
+/*
+// To re-enable IPv6 scanning, remove the comment marks (/* and * /) from this function.
 func generateIPv6Addresses() []string {
 	var ips []string
 	prefixes := []string{"2606:4700:d0::", "2606:4700:d1::"}
@@ -94,26 +106,33 @@ func generateIPv6Addresses() []string {
 	}
 	return ips
 }
+*/
 
 func main() {
-	tcpTimeout := 5 * time.Second
-	udpTimeout := 3 * time.Second
-	numWorkers := 100
-	debugMode  := true 
+	// --- Configuration ---
+	tcpTimeout := 8 * time.Second
+	// udpTimeout := 3 * time.Second // Disabled
+	numWorkers := 50
+	// --- End Configuration ---
 
 	rand.Seed(time.Now().UnixNano())
 
-	fmt.Println("Step 1: Generating IP addresses to scan...")
-	allIPs := append(generateIPv4Addresses(), generateIPv6Addresses()...)
-	allIPs = append(allIPs, "188.114.98.224") 
+	fmt.Println("Step 1: Generating IPv4 addresses to scan...")
+	allIPs := generateIPv4Addresses()
+	// To re-enable IPv6, uncomment the line below.
+	// allIPs = append(allIPs, generateIPv6Addresses()...)
+	allIPs = append(allIPs, "188.114.98.224") // Guaranteed IP Test
 
-	fmt.Printf("Generated %d IPs to test.\n", len(allIPs))
+	fmt.Printf("Generated %d unique IPs to test.\n", len(allIPs))
 	fmt.Println("\nStep 2: Starting scanner workers and queuing jobs...")
 
 	tcpPorts := []int{8886, 908, 8854, 4198, 955, 988, 3854, 894, 7156, 1074, 939, 864, 854, 1070, 3476, 1387, 7559, 890, 1018}
-	udpPorts := []int{500, 1701, 4500, 2408, 878, 2371}
-	
-	totalJobs := (len(allIPs) * len(tcpPorts)) + (len(allIPs) * len(udpPorts))
+	// To re-enable UDP, uncomment the line below.
+	// udpPorts := []int{500, 1701, 4500, 2408, 878, 2371}
+
+	totalJobs := len(allIPs) * len(tcpPorts)
+	// To include UDP jobs in the total, uncomment the line below.
+	// totalJobs += len(allIPs) * len(udpPorts)
 	fmt.Printf("Queuing %d total scan jobs for %d workers...\n", totalJobs, numWorkers)
 
 	jobs := make(chan ScanJob, totalJobs)
@@ -123,9 +142,9 @@ func main() {
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go worker(jobs, results, &wg, &completedJobs, debugMode)
+		go worker(jobs, results, &wg, &completedJobs)
 	}
-	
+
 	doneProgress := make(chan bool)
 	go printProgress(&completedJobs, totalJobs, doneProgress)
 
@@ -133,15 +152,18 @@ func main() {
 		for _, port := range tcpPorts {
 			jobs <- ScanJob{IP: ip, Port: port, Protocol: "tcp", Timeout: tcpTimeout}
 		}
-		for _, port := range udpPorts {
-			jobs <- ScanJob{IP: ip, Port: port, Protocol: "udp", Timeout: udpTimeout}
-		}
+		// To re-enable UDP scanning, uncomment the loop below.
+		/*
+			for _, port := range udpPorts {
+				jobs <- ScanJob{IP: ip, Port: port, Protocol: "udp", Timeout: udpTimeout}
+			}
+		*/
 	}
 	close(jobs)
 
 	wg.Wait()
 	doneProgress <- true
-	
+
 	close(results)
 
 	fmt.Println("\nScan complete. Processing results...")
@@ -181,6 +203,7 @@ func main() {
 		fmt.Println("No open TCP Endpoints were found.")
 	}
 
+	// The UDP Results section is kept in case you re-enable UDP scanning.
 	fmt.Println("\n--- UDP Results ---")
 	if len(udpResults) > 0 {
 		sort.Slice(udpResults, func(i, j int) bool {
