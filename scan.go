@@ -7,39 +7,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
-// ScanJob represents a single port scan task.
-type ScanJob struct {
-	IP       string
-	Port     int
-	Protocol string
-	Timeout  time.Duration
-}
-
-// EndpointResult holds the outcome of a successful scan.
 type EndpointResult struct {
 	Endpoint string
 	Latency  time.Duration
 	Protocol string
-}
-
-// worker processes jobs from the jobs channel.
-func worker(id int, jobs <-chan ScanJob, results chan<- EndpointResult, wg *sync.WaitGroup) {
-	defer wg.Done()
-	for job := range jobs {
-		address := net.JoinHostPort(job.IP, strconv.Itoa(job.Port))
-		start := time.Now()
-		conn, err := net.DialTimeout(job.Protocol, address, job.Timeout)
-		latency := time.Since(start)
-
-		if err == nil {
-			conn.Close()
-			results <- EndpointResult{Endpoint: address, Latency: latency, Protocol: job.Protocol}
-		}
-	}
 }
 
 func generateIPv4Addresses() []string {
@@ -49,7 +23,8 @@ func generateIPv4Addresses() []string {
 		"188.114.96.", "188.114.97.", "188.114.98.", "188.114.99.",
 	}
 	for _, subnet := range subnets {
-		for i := 0; i < 75; i++ {
+		// Reduced the number of random IPs to make the scan time more reasonable.
+		for i := 0; i < 10; i++ {
 			ips = append(ips, fmt.Sprintf("%s%d", subnet, rand.Intn(256)))
 		}
 	}
@@ -65,102 +40,69 @@ func generateIPv4Addresses() []string {
 	return uniqueIPs
 }
 
-/*
-func generateIPv6Addresses() []string {
-	var ips []string
-	prefixes := []string{"2606:4700:d0::", "2606:4700:d1::"}
-	for _, prefix := range prefixes {
-		for i := 0; i < 25; i++ {
-			ip := fmt.Sprintf("%s%x:%x:%x:%x",
-				prefix, rand.Intn(0xffff), rand.Intn(0xffff), rand.Intn(0xffff), rand.Intn(0xffff))
-			ips = append(ips, ip)
-		}
-	}
-	return ips
-}
-*/
-
 func main() {
 	// --- Configuration ---
 	tcpTimeout := 8 * time.Second
-	// udpTimeout := 3 * time.Second
-	numWorkers := 50
+	// A delay between each connection attempt to avoid triggering firewalls.
+	scanDelay := 50 * time.Millisecond
 	// --- End Configuration ---
 
 	rand.Seed(time.Now().UnixNano())
 
 	fmt.Println("Step 1: Generating IPv4 addresses to scan...")
 	allIPs := generateIPv4Addresses()
-	// allIPs = append(allIPs, generateIPv6Addresses()...)
-	allIPs = append(allIPs, "188.114.98.224") // Guaranteed IP Test
+	// Add the known working IP to the beginning of the list to test it first.
+	allIPs = append([]string{"188.114.98.224"}, allIPs...)
 
 	fmt.Printf("Generated %d unique IPs to test.\n", len(allIPs))
-	fmt.Println("\nStep 2: Starting scanner...")
+	fmt.Println("\nStep 2: Starting slow, sequential scan...")
 
 	tcpPorts := []int{8886, 908, 8854, 4198, 955, 988, 3854, 894, 7156, 1074, 939, 864, 854, 1070, 3476, 1387, 7559, 890, 1018}
 	// udpPorts := []int{500, 1701, 4500, 2408, 878, 2371}
 
-	jobs := make(chan ScanJob)
-	results := make(chan EndpointResult)
-	var wg sync.WaitGroup
-
-	// Start workers
-	for i := 1; i <= numWorkers; i++ {
-		wg.Add(1)
-		go worker(i, jobs, results, &wg)
-	}
-	
-	// Collect results in a separate goroutine
-	var tcpResults []EndpointResult
-	var udpResults []EndpointResult
-	var collectorWg sync.WaitGroup
-	collectorWg.Add(1)
-	go func() {
-		defer collectorWg.Done()
-		for result := range results {
-			if result.Protocol == "tcp" {
-				tcpResults = append(tcpResults, result)
-			} else {
-				udpResults = append(udpResults, result)
-			}
-		}
-	}()
-
-	// Add jobs and update progress
-	allJobs := []ScanJob{}
+	var allJobs []string
 	for _, ip := range allIPs {
 		for _, port := range tcpPorts {
-			allJobs = append(allJobs, ScanJob{IP: ip, Port: port, Protocol: "tcp", Timeout: tcpTimeout})
+			allJobs = append(allJobs, fmt.Sprintf("%s:%d", ip, port))
 		}
-		/*
-		for _, port := range udpPorts {
-			allJobs = append(allJobs, ScanJob{IP: ip, Port: port, Protocol: "udp", Timeout: udpTimeout})
-		}
-		*/
 	}
+	// Add UDP jobs here if re-enabled in the future.
 
 	totalJobs := len(allJobs)
-	fmt.Printf("Queuing %d total scan jobs for %d workers...\n", totalJobs, numWorkers)
-	startTime := time.Now()
+	var tcpResults []EndpointResult
+	// var udpResults []EndpointResult
 
+	startTime := time.Now()
 	for i, job := range allJobs {
-		jobs <- job
+		host, portStr, _ := net.SplitHostPort(job)
+		port, _ := strconv.Atoi(portStr)
+
+		// Update Progress Bar
 		percent := float64(i+1) / float64(totalJobs) * 100
 		elapsed := time.Since(startTime).Seconds()
 		jobsPerSecond := float64(i+1) / elapsed
 		bar := strings.Repeat("=", int(percent/2)) + strings.Repeat(" ", 50-int(percent/2))
-		fmt.Printf("\rProgress: [%s] %.2f%% | %.0f jobs/sec", bar, percent, jobsPerSecond)
-	}
-	close(jobs)
+		// Print the current target on the same line as the progress bar
+		fmt.Printf("\rProgress: [%s] %.2f%% | %.1f jobs/sec | Testing: %-21s", bar, percent, jobsPerSecond, job)
 
-	wg.Wait()
-	close(results)
-	collectorWg.Wait()
-	
+		// Perform the scan
+		startScan := time.Now()
+		conn, err := net.DialTimeout("tcp", job, tcpTimeout)
+		latency := time.Since(startScan)
+
+		if err == nil {
+			conn.Close()
+			tcpResults = append(tcpResults, EndpointResult{Endpoint: job, Latency: latency, Protocol: "tcp"})
+		}
+
+		// Wait before starting the next scan
+		time.Sleep(scanDelay)
+	}
+
 	fmt.Println("\n\nScan complete. Processing results...")
-	
-	if len(tcpResults) == 0 && len(udpResults) == 0 {
-		fmt.Println("\nCRITICAL: Could not find any open TCP or UDP ports.")
+
+	if len(tcpResults) == 0 { // Simplified check since UDP is disabled
+		fmt.Println("\nCRITICAL: Could not find any open TCP ports.")
 		return
 	}
 
@@ -181,24 +123,5 @@ func main() {
 		}
 	} else {
 		fmt.Println("No open TCP Endpoints were found.")
-	}
-
-	fmt.Println("\n--- UDP Results ---")
-	if len(udpResults) > 0 {
-		sort.Slice(udpResults, func(i, j int) bool {
-			return udpResults[i].Latency < udpResults[j].Latency
-		})
-		bestEndpoint := udpResults[0]
-		fmt.Printf("🏆 Best UDP Endpoint: %s (Latency: %.2f ms)\n\n", bestEndpoint.Endpoint, float64(bestEndpoint.Latency.Nanoseconds())/1e6)
-
-		fmt.Println("--- Top 10 UDP Endpoints ---")
-		for i, result := range udpResults {
-			if i >= 10 {
-				break
-			}
-			fmt.Printf("%d. Endpoint: %s (Latency: %.2f ms)\n", i+1, result.Endpoint, float64(result.Latency.Nanoseconds())/1e6)
-		}
-	} else {
-		fmt.Println("No open UDP Endpoints were found.")
 	}
 }
