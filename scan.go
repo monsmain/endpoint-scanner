@@ -195,9 +195,9 @@ func main() {
 		fmt.Printf("🏆 Best TCP Endpoint: %s\n", bestEndpoint.Endpoint)
 		fmt.Printf("   Latency: %.2f ms (Real Ping: %.2f ms)\n\n", float64(bestEndpoint.Latency.Nanoseconds())/1e6, float64(realPing.Nanoseconds())/1e6)
 
-		fmt.Println("--- Top 5 TCP Endpoints ---")
+		fmt.Println("--- Top 10 TCP Endpoints ---")
 		for i, result := range tcpResults {
-			if i >= 5 {
+			if i >= 10 {
 				break
 			}
 			host, _, _ := net.SplitHostPort(result.Endpoint)
@@ -219,9 +219,9 @@ func main() {
 		fmt.Printf("🏆 Best UDP Endpoint: %s\n", bestEndpoint.Endpoint)
 		fmt.Printf("   Latency: %.2f ms (Real Ping: %.2f ms)\n\n", float64(bestEndpoint.Latency.Nanoseconds())/1e6, float64(realPing.Nanoseconds())/1e6)
 
-		fmt.Println("--- Top 5 UDP Endpoints ---")
+		fmt.Println("--- Top 10 UDP Endpoints ---")
 		for i, result := range udpResults {
-			if i >= 5 {
+			if i >= 10 {
 				break
 			}
 			host, _, _ := net.SplitHostPort(result.Endpoint)
