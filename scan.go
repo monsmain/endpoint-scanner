@@ -183,15 +183,15 @@ func main() {
 		return
 	}
 
+	fmt.Println("\n\n--- TCP Results ---")
 	if len(tcpResults) > 0 {
 		sort.Slice(tcpResults, func(i, j int) bool {
 			return tcpResults[i].Latency < tcpResults[j].Latency
 		})
-		fmt.Println("\n--- Best TCP Endpoint Found ---")
 		bestEndpoint := tcpResults[0]
 		host, _, _ := net.SplitHostPort(bestEndpoint.Endpoint)
 		realPing := ipToPing[host]
-		fmt.Printf("🏆 Best Endpoint: %s (TCP)\n", bestEndpoint.Endpoint)
+		fmt.Printf("🏆 Best Endpoint (TCP): %s\n", bestEndpoint.Endpoint)
 		fmt.Printf("   Real Ping: %.2f ms\n\n", float64(realPing.Nanoseconds())/1e6)
 
 		fmt.Println("--- Top 5 TCP Endpoints ---")
@@ -204,18 +204,18 @@ func main() {
 			fmt.Printf("%d. Endpoint: %s (Ping: %.2f ms)\n", i+1, result.Endpoint, float64(realPing.Nanoseconds())/1e6)
 		}
 	} else {
-		fmt.Println("\n--- No open TCP Endpoints found ---")
+		fmt.Println("No open TCP Endpoints were found.")
 	}
 
+	fmt.Println("\n\n--- UDP Results ---")
 	if len(udpResults) > 0 {
 		sort.Slice(udpResults, func(i, j int) bool {
 			return udpResults[i].Latency < udpResults[j].Latency
 		})
-		fmt.Println("\n--- Best UDP Endpoint Found ---")
 		bestEndpoint := udpResults[0]
 		host, _, _ := net.SplitHostPort(bestEndpoint.Endpoint)
 		realPing := ipToPing[host]
-		fmt.Printf("🏆 Best Endpoint: %s (UDP)\n", bestEndpoint.Endpoint)
+		fmt.Printf("🏆 Best Endpoint (UDP): %s\n", bestEndpoint.Endpoint)
 		fmt.Printf("   Real Ping: %.2f ms\n\n", float64(realPing.Nanoseconds())/1e6)
 
 		fmt.Println("--- Top 5 UDP Endpoints ---")
@@ -228,7 +228,7 @@ func main() {
 			fmt.Printf("%d. Endpoint: %s (Ping: %.2f ms)\n", i+1, result.Endpoint, float64(realPing.Nanoseconds())/1e6)
 		}
 	} else {
-		fmt.Println("\n--- No open UDP Endpoints found ---")
+		fmt.Println("No open UDP Endpoints were found.")
 	}
 
 	fmt.Println("\n(The lower the ms, the faster the ping)")
