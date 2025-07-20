@@ -97,8 +97,8 @@ func scanPort(ip string, port int, protocol string, timeout time.Duration, resul
 }
 
 func main() {
-	tcpTimeout := 4 * time.Second
-	udpTimeout := 4 * time.Second
+	tcpTimeout := 5 * time.Second
+	udpTimeout := 5 * time.Second
 
 	rand.Seed(time.Now().UnixNano())
 
